@@ -3,23 +3,54 @@ import { useRef, useState, useEffect } from "react";
 import { ToastContainer, toast, Slide } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import { v4 as uuidv4 } from "uuid";
+import { useAuth } from "../context/useAuth";
+import AuthForm from "./AuthForm";
+
+const API = "http://localhost:3000";
 
 const Manager = () => {
+  const { token, user, ready } = useAuth();
   const ref = useRef();
   const passwordRef = useRef();
   const [form, setForm] = useState({ site: "", username: "", password: "" });
   const [passwordArray, setPasswordArray] = useState([]);
 
-  const getPasswords = async () => {
-    let req = fetch("http://localhost:3000/");
-    let passwords = localStorage.getItem("passwords");
-    console.log("Fetched passwords from localStorage: ", passwords);
+  const authHeaders = (extra = {}) => ({
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...extra,
+  });
+
+  async function fetchPasswordList(signal) {
+    if (!token) {
+      setPasswordArray([]);
+      return;
+    }
+    const req = await fetch(`${API}/api/passwords`, {
+      headers: authHeaders(),
+      signal,
+    });
+    if (!req.ok) {
+      setPasswordArray([]);
+      return;
+    }
+    const passwords = await req.json();
     setPasswordArray(passwords);
-  };
+  }
 
   useEffect(() => {
-    getPasswords();
-  }, []);
+    if (!ready) return;
+    const ac = new AbortController();
+    const run = async () => {
+      try {
+        await fetchPasswordList(ac.signal);
+      } catch {
+        if (!ac.signal.aborted) setPasswordArray([]);
+      }
+    };
+    void run();
+    return () => ac.abort();
+  }, [ready, token]); // eslint-disable-line react-hooks/exhaustive-deps -- refetch when auth only
 
   const copyText = (text) => {
     toast("Copied to clipboard!", {
@@ -36,7 +67,7 @@ const Manager = () => {
     navigator.clipboard.writeText(text);
   };
 
-  const showPassword = (params) => {
+  const showPassword = () => {
     // alert("show the password")
     passwordRef.current.type = "text";
     if (ref.current.src.includes("Icons/closed.png")) {
@@ -48,35 +79,65 @@ const Manager = () => {
     }
   };
   const savePassword = async () => {
+    if (!token || !user) {
+      toast.error("Sign in to save passwords", {
+        position: "top-right",
+        autoClose: 3000,
+        hideProgressBar: false,
+        closeOnClick: false,
+        pauseOnHover: true,
+        draggable: true,
+        progress: undefined,
+        theme: "dark",
+        transition: Slide,
+      });
+      return;
+    }
     if (
       form.site.length > 3 &&
       form.username.length > 3 &&
-      form.password.length > 3
+      form.password.length > 6
     ) {
+      const entryId = form.id || uuidv4();
+      const payload = { ...form, id: entryId };
 
-      // if it exists already, delete the old one!
-       await fetch(`http://localhost:3000/${id}`, {
+      await fetch(`${API}/api/passwords`, {
         method: "DELETE",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({id : form.id}),
+        headers: authHeaders(),
+        body: JSON.stringify({ id: entryId }),
       });
 
-      setPasswordArray([...passwordArray, { ...form, id: uuidv4() }]);
-      await fetch("http://localhost:3000/", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ ...form, id: uuidv4() }),
+      setPasswordArray((prev) => {
+        const without = prev.filter((p) => p.id !== entryId);
+        return [...without, payload];
       });
+      const saveRes = await fetch(`${API}/api/passwords`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify(payload),
+      });
+      if (!saveRes.ok) {
+        toast.error("Could not save — try signing in again", {
+          position: "top-right",
+          autoClose: 3000,
+          hideProgressBar: false,
+          closeOnClick: false,
+          pauseOnHover: true,
+          draggable: true,
+          progress: undefined,
+          theme: "dark",
+          transition: Slide,
+        });
+        fetchPasswordList().catch(() => setPasswordArray([]));
+        return;
+      }
       // localStorage.setItem(
       //   "passwords",
       //   JSON.stringify([...passwordArray, { ...form, id: uuidv4() }]),
       // );
       // console.log([...passwordArray, form]);
-      toast("Password is saved", {
+      setForm({ site: "", username: "", password: "" });
+      toast.success("Password is saved", {
         position: "top-right",
         autoClose: 3000,
         hideProgressBar: false,
@@ -88,7 +149,7 @@ const Manager = () => {
         transition: Slide,
       });
     } else {
-      toast("Invalid parameters!", {
+      toast.error("Invalid parameters!", {
         position: "top-right",
         autoClose: 3000,
         hideProgressBar: false,
@@ -102,22 +163,21 @@ const Manager = () => {
     }
   };
   const deletePassword = async (id) => {
+    if (!token) return;
     console.log("Deleting password with Id : ", id);
     let c = confirm("Are you sure you want to delete this password?");
     if (c) {
       setPasswordArray(passwordArray.filter((item) => item.id !== id));
-     await fetch(`http://localhost:3000/${id}`, {
+      await fetch(`${API}/api/passwords`, {
         method: "DELETE",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({id}),
+        headers: authHeaders(),
+        body: JSON.stringify({ id }),
       });
       // localStorage.setItem(
       //   "passwords",
       //   JSON.stringify(passwordArray.filter((item) => item.id !== id)),
       // );
-      toast("Password deleted successfully!", {
+      toast.success("Password deleted successfully!", {
         position: "top-right",
         autoClose: 3000,
         hideProgressBar: false,
@@ -132,7 +192,7 @@ const Manager = () => {
   };
   const editPassword = (id) => {
     console.log("editing password with Id : ", id);
-    setForm({...passwordArray.filter((i) => i.id === id)[0], id : id});
+    setForm({ ...passwordArray.filter((i) => i.id === id)[0], id: id });
     setPasswordArray(passwordArray.filter((item) => item.id !== id));
 
     // localStorage.setItem("passwords", JSON.stringify([...passwordArray, form]));
@@ -158,6 +218,26 @@ const Manager = () => {
         transition="Slide"
       />
 
+      {!ready && (
+        <div className="p-8 text-center text-purple-800">Loading…</div>
+      )}
+
+      {ready && !user && (
+        <div className="p-4 md:px-50 py-8 md:mycontainer">
+          <h1 className="text-4xl text font-bold text-center">
+            <span className="text-purple-500">&lt;</span>
+            <span>Pass</span>
+            <span className="text-violet-800">Man</span>
+            <span className="text-purple-500">/&gt;</span>
+          </h1>
+          <p className="text-purple-800 text-lg text-center mb-8">
+            Built for Privacy. Designed for Trust.
+          </p>
+          <AuthForm />
+        </div>
+      )}
+
+      {ready && user && (
       <div className="p-4 md:px-50 py-8 md:mycontainer">
         <h1 className="text-4xl text font-bold text-center">
           <span className="text-purple-500">&lt;</span>
@@ -290,7 +370,7 @@ const Manager = () => {
                       </td>
                       <td className="py-1.5 border border-white text-center ">
                         <div className="flex items-center justify-center ">
-                          <span>{"*".repeat(item.password.length)}</span>
+                          <span>{"*".repeat(item.password?.length || 0)}</span>
                           <div
                             className="lordiconcopy size-1 cursor-pointer"
                             onClick={() => {
@@ -343,6 +423,7 @@ const Manager = () => {
           )}
         </div>
       </div>
+      )}
     </>
   );
 };
